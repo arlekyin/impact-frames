@@ -13,6 +13,11 @@
 import { MODULE_ID, prefs } from "./settings.mjs";
 import { stowWindows } from "./cutscene/windows.mjs";
 import { cleanupOverlays } from "./cutscene/overlay.mjs";
+import { hideTokenMarks, stageFilter } from "./cutscene/stage.mjs";
+import { playCue, duckScene } from "./cutscene/audio.mjs";
+import { playFists, prepareFists } from "./fists.mjs";
+import { knockback, playLaunch } from "./launch.mjs";
+import "./sounds.mjs";
 
 // Хронометраж, мс. Рисунок импакт-кадра в аниме держится 1–3 кадра при 24 к/с (≈42–125 мс),
 // хитстоп тяжёлого удара в играх — 50–100 мс: первый кадр — 2 кадра анимации, второй — 2
@@ -365,6 +370,239 @@ function screenFocus(point) {
     return { fx: clamp(p.x / rect.width), fy: clamp(p.y / rect.height) };
 }
 
+// Линия разреза: от бьющего через цель и дальше за край экрана
+export function tokenLine(fromId, toPoint) {
+    const from = canvas?.tokens?.get(fromId)?.center;
+    if (!from || !toPoint) return null;
+    const dx = toPoint.x - from.x, dy = toPoint.y - from.y, len = Math.hypot(dx, dy);
+    if (len < 1) return null;
+    const reach = Math.max(len, (canvas.dimensions?.size ?? 100) * 60);
+    return { from: { x: from.x, y: from.y }, to: { x: from.x + dx / len * reach, y: from.y + dy / len * reach } };
+}
+
+// ==========================================
+// РАЗРЕЗ (style: slash)
+// ==========================================
+
+// Часть отрезка S→E внутри экрана: [t0, t1] в долях отрезка, null — отрезок вне экрана
+function visibleRange(S, E, W, H) {
+    let t0 = 0, t1 = 1;
+    const dx = E.x - S.x, dy = E.y - S.y;
+    for (const [p, q] of [[-dx, S.x], [dx, W - S.x], [-dy, S.y], [dy, H - S.y]]) {
+        if (p === 0) { if (q < 0) return null; continue; }
+        const r = q / p;
+        if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+        else { if (r < t0) return null; if (r < t1) t1 = r; }
+    }
+    return t1 > t0 ? [t0, t1] : null;
+}
+
+// Хронометраж и камера разреза: рывок к точке удара, в первом кадре — толчок
+const SLASH_ZOOM = { start: 1.06, first: 1.16, second: 1.12 };
+// Сдвиг половин сцены по линии разреза, CSS-пиксели при высоте экрана 1000: вдоль линии и поперёк
+const SLASH_SPLIT = { first: [60, 14], second: [130, 34] };
+
+/**
+ * Фильтр всей сцены: цветокоррекция кадра и разрез. По обе стороны линии сцена берётся со сдвигом
+ * вдоль линии в разные стороны и чуть врозь, щель между половинами — цвета фона кадра.
+ * Режим 0 — стартовый кадр: цвет с поднятым контрастом; 1 — ч/б, тёмное; 2 — ч/б, инверсия.
+ */
+const SLASH_SHADER = `
+precision highp float;
+varying vec2 vTextureCoord;
+uniform sampler2D uSampler;
+uniform vec4 inputSize;
+uniform vec4 outputFrame;
+uniform vec4 filterClamp;
+uniform vec2 uPoint;
+uniform vec2 uDir;
+uniform vec2 uSplit;
+uniform float uMode;
+uniform float uDim;
+void main() {
+    vec2 screen = vTextureCoord * inputSize.xy + outputFrame.xy;
+    vec2 normal = vec2(-uDir.y, uDir.x);
+    float side = dot(screen - uPoint, normal) < 0.0 ? -1.0 : 1.0;
+    float gap = abs(dot(screen - uPoint, normal)) < uSplit.y ? 1.0 : 0.0;
+    vec2 coord = vTextureCoord - (uDir * uSplit.x + normal * uSplit.y) * side * inputSize.zw;
+    bool outside = any(lessThan(coord, filterClamp.xy)) || any(greaterThan(coord, filterClamp.zw));
+    vec4 color = outside ? vec4(0.0, 0.0, 0.0, 1.0) : texture2D(uSampler, coord);
+    vec3 rgb = color.a > 0.0 ? color.rgb / color.a : vec3(0.0);
+    if (uMode < 0.5) {
+        rgb = clamp((rgb - 0.5) * 1.45 + 0.5, 0.0, 1.0);
+        gl_FragColor = vec4(rgb, 1.0);
+        return;
+    }
+    float v = dot(rgb, vec3(0.299, 0.587, 0.114));
+    v = clamp((v - 0.5) * 2.4 + 0.45, 0.0, 1.0);
+    v = mix(v, 0.0, gap);
+    if (uMode > 1.5) v = 1.0 - v;
+    gl_FragColor = vec4(vec3(v * uDim), 1.0);
+}`;
+
+/**
+ * Силуэты токенов поверх сцены, под фильтром кадра: картинка токена тушью — светлое белым,
+ * остальное чёрным — на белой обводке. Фильтр второго кадра инвертирует их.
+ * Силуэт повторяет форму картинки токена: прозрачное в ней — не фигура.
+ */
+function silhouettes(tokenIds) {
+    const layer = new PIXI.Container();
+    const outline = 3 / (canvas.stage.scale.x || 1);
+    // Тушь: яркость с порогом 0,55 и резким переходом
+    const ink = new PIXI.ColorMatrixFilter();
+    const K = 10, row = [0.299 * K, 0.587 * K, 0.114 * K, 0, -0.55 * K];
+    ink.matrix = [...row, ...row, ...row, 0, 0, 0, 1, 0];
+    for (const id of tokenIds ?? []) {
+        const token = canvas.tokens?.get(id);
+        const mesh = token?.mesh;
+        if (!mesh?.texture || token.visible === false) continue;
+        const copy = (tint, dx = 0, dy = 0, filter = null) => {
+            const sprite = new PIXI.Sprite(mesh.texture);
+            sprite.anchor.set(mesh.anchor?.x ?? 0.5, mesh.anchor?.y ?? 0.5);
+            sprite.position.set(mesh.position.x + dx, mesh.position.y + dy);
+            sprite.scale.set(mesh.scale.x, mesh.scale.y);
+            sprite.rotation = mesh.rotation;
+            sprite.tint = tint;
+            if (filter) sprite.filters = [filter];
+            layer.addChild(sprite);
+        };
+        for (let i = 0; i < 12; i++) copy(0xffffff, Math.cos(i * Math.PI / 6) * outline, Math.sin(i * Math.PI / 6) * outline);
+        copy(0xffffff, 0, 0, ink);
+    }
+    return layer;
+}
+
+
+// Точка сцены → CSS-пиксели холста по текущей камере (сцена — корень, без поворота)
+const toView = p => {
+    const stage = canvas.stage;
+    return { x: stage.position.x + (p.x - stage.pivot.x) * stage.scale.x, y: stage.position.y + (p.y - stage.pivot.y) * stage.scale.y };
+};
+
+/**
+ * Разрез и полосы — вектор на прозрачном холсте поверх сцены, в пикселях устройства.
+ * Разрез — рваная полоса по видимой части шаблона, сужается к его концу; от неё в стороны клинья.
+ */
+function drawSlash(ctx, line, color) {
+    const ratio = devicePixelRatio, W = ctx.canvas.width, H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const toScreen = p => { const q = toView(p); return { x: q.x * ratio, y: q.y * ratio }; };
+    const S = toScreen(line.from), E = toScreen(line.to);
+    const len = Math.hypot(E.x - S.x, E.y - S.y);
+    const range = len >= 1 ? visibleRange(S, E, W, H) : null;
+    if (!range) return;
+    const [t0, t1] = range;
+    const N = { x: -(E.y - S.y) / len, y: (E.x - S.x) / len }, D = { x: -N.y, y: N.x };
+    const at = (t, off = 0) => ({ x: S.x + (E.x - S.x) * t + N.x * off, y: S.y + (E.y - S.y) * t + N.y * off });
+    const k = Math.min(W, H) / 1000, seen = (t1 - t0) * len;
+    const rnd = seeded(11);
+    ctx.fillStyle = color;
+    for (let i = 0, n = Math.round(25 + 100 * seen / H); i < n; i++) {
+        const t = t0 + rnd() * (t1 - t0), side = rnd() < 0.5 ? -1 : 1;
+        const length = (35 + rnd() ** 2 * 480) * k, width = (2 + rnd() * 8) * k, lean = (rnd() - 0.3) * 0.5;
+        const base = at(t);
+        ctx.beginPath();
+        ctx.moveTo(base.x + D.x * width, base.y + D.y * width);
+        ctx.lineTo(base.x - D.x * width, base.y - D.y * width);
+        ctx.lineTo(base.x + (N.x * side + D.x * lean) * length, base.y + (N.y * side + D.y * lean) * length);
+        ctx.closePath(); ctx.fill();
+    }
+    const STEPS = 80, from = t0 === 0 ? -14 * k / len : t0;
+    const half = (i, sign) => {
+        const t = from + (t1 - from) * i / STEPS;
+        return at(t, sign * 12 * k * (1 - Math.max(0, t) * 0.7) * (0.85 + rnd() * 0.3));
+    };
+    ctx.beginPath();
+    for (let i = 0; i <= STEPS; i++) { const p = half(i, 1); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }
+    for (let i = STEPS; i >= 0; i--) { const p = half(i, -1); ctx.lineTo(p.x, p.y); }
+    ctx.closePath(); ctx.fill();
+}
+
+/**
+ * Разрез в самой сцене: не снимок, а живая сцена под фильтром —
+ * цветокоррекция кадра, силуэты токенов, камера (наезд и толчок)
+ * и разрез поверх. Всё рисуется движком в разрешении экрана.
+ * @returns {boolean}  false — сцены нет или она другая: кадр собирается по-старому.
+ */
+function playEngineSlash({ sceneId, point, tokens, line }) {
+    const stage = canvas?.stage, renderer = canvas?.app?.renderer;
+    if (!canvas?.ready || !stage || !renderer || !globalThis.PIXI || (sceneId && canvas.scene?.id !== sceneId)) return false;
+    const calm = prefs.calm();
+    const slow = prefs.slow();
+
+    const filter = new PIXI.Filter(undefined, SLASH_SHADER, { uPoint: [0, 0], uDir: [1, 0], uSplit: [0, 0], uMode: 0, uDim: 1 });
+    const saved = { x: stage.position.x, y: stage.position.y, sx: stage.scale.x, sy: stage.scale.y };
+    const showMarks = hideTokenMarks();
+    const figures = silhouettes(tokens);
+    figures.visible = false;
+    stage.addChild(figures);
+    const slashFilter = stageFilter(filter);
+
+    const cv = document.createElement('canvas');
+    cv.className = 'ifr-overlay';
+    cv.width = Math.round(innerWidth * devicePixelRatio); cv.height = Math.round(innerHeight * devicePixelRatio);
+    document.body.append(cv);
+    const ctx = cv.getContext('2d');
+    playSound();
+
+    // Камера: наезд вокруг точки удара — она остаётся на месте экрана
+    const view = canvas.app.view ?? canvas.app.canvas;
+    const focus = screenFocus(point), rect = view.getBoundingClientRect();
+    const fx = rect.width * focus.fx, fy = rect.height * focus.fy;
+    const camera = (zoom, dx = 0, dy = 0) => {
+        stage.scale.set(saved.sx * zoom, saved.sy * zoom);
+        stage.position.set(fx - (fx - saved.x) * zoom + dx, fy - (fy - saved.y) * zoom + dy);
+    };
+    const k = Math.min(rect.width, rect.height) / 1000;
+    const ox = (Math.random() - 0.5) * 24 * k, oy = (Math.random() - 0.5) * 24 * k;
+    // Линия в координатах экрана — после камеры: шейдер работает в CSS-пикселях холста
+    const aim = split => {
+        const S = toView(line.from), E = toView(line.to);
+        const len = Math.hypot(E.x - S.x, E.y - S.y) || 1;
+        filter.uniforms.uPoint = [S.x, S.y];
+        filter.uniforms.uDir = [(E.x - S.x) / len, (E.y - S.y) / len];
+        filter.uniforms.uSplit = split ? [split[0] * k, split[1] * k] : [0, 0];
+    };
+
+    let phase = null;
+    const t0 = performance.now();
+    const finish = () => {
+        slashFilter.remove();
+        stage.scale.set(saved.sx, saved.sy);
+        stage.position.set(saved.x, saved.y);
+        figures.destroy({ children: true });
+        showMarks();
+        cv.remove();
+        stopPlaying();
+    };
+    const tick = now => {
+        try {
+            const t = (now - t0) / slow;
+            if (t >= (calm ? T.calm : T.end) || !canvas.ready) return finish();
+            const next = t < T.start ? 'start' : (calm || t < T.first) ? 'first' : 'second';
+            if (next !== phase) {
+                phase = next;
+                if (phase === 'start') camera(SLASH_ZOOM.start, -ox / 2, -oy / 2);
+                else if (phase === 'first') camera(SLASH_ZOOM.first, ox, oy);
+                else camera(SLASH_ZOOM.second, -ox / 3, -oy / 3);
+                aim(phase === 'start' ? null : SLASH_SPLIT[phase]);
+                filter.uniforms.uMode = phase === 'start' ? 0 : phase === 'first' ? 1 : 2;
+                // Без вспышек: первый кадр приглушён, белое становится серым
+                filter.uniforms.uDim = calm ? 0.55 : 1;
+                figures.visible = phase !== 'start';
+                if (phase === 'start') ctx.clearRect(0, 0, cv.width, cv.height);
+                else drawSlash(ctx, line, phase === 'first' ? (calm ? '#8c8c8c' : '#fff') : '#000');
+            }
+            requestAnimationFrame(tick);
+        } catch (error) {
+            finish();
+            console.error(`${MODULE_ID} | разрез`, error);
+        }
+    };
+    requestAnimationFrame(tick);
+    return true;
+}
+
 // ==========================================
 // ЗВУК
 // ==========================================
@@ -442,18 +680,48 @@ function stopPlaying() {
 let playId = 0;
 
 /**
+ * Отброс по-настоящему: Мастер переносит цель на место приземления. Прозрачность, которую сцена удара
+ * задала токену, возвращается у всех — через 2 с или сразу после переноса
+ */
+function moveKnocked(sceneId, knock) {
+    const restore = () => {
+        const token = canvas?.tokens?.get(knock.tokenId);
+        if (token?.mesh && token.mesh.ifrAlpha !== undefined) { token.mesh.alpha = token.mesh.ifrAlpha; delete token.mesh.ifrAlpha; }
+        try { token?.renderFlags?.set({ refreshState: true }); } catch { /* достаточно прозрачности */ }
+    };
+    setTimeout(restore, 2000);
+    if (game.users.activeGM?.id !== game.user.id) return;
+    const doc = game.scenes.get(sceneId)?.tokens.get(knock.tokenId);
+    doc?.update({ x: knock.x, y: knock.y }, { animate: false })
+        .then(restore)
+        .catch(error => console.warn(`${MODULE_ID} | отброс цели`, error));
+}
+
+/** Стили кадра */
+export const STYLES = ["freeze", "slash", "barrage", "launch"];
+/** Отброс: на сколько футов летит цель */
+export const LAUNCH_FEET = 30;
+
+/**
  * Показать кадр у себя.
  * @param {object} data
+ * @param {string} [data.style]    freeze (по умолчанию), slash, barrage, launch.
  * @param {string} [data.art]      Картинка, если нет ни портрета, ни сцены (обычно — бьющий).
  * @param {string} [data.sceneId]  Сцена удара: у кого открыта другая — кадр из портрета или картинки.
  * @param {{x: number, y: number}} [data.point]  Точка удара на сцене.
  * @param {string[]} [data.tokens] Токены бьющего и цели (цель — последней).
+ * @param {object} [data.line]     Разрез: отрезок {from, to} на сцене.
+ * @param {object} [data.knock]    Отброс: куда летит цель (launch.mjs → knockback).
+ * @param {boolean} [data.move]    Отброс переносит токен по-настоящему (иначе — только зрелище).
  */
 export async function playFrame(data) {
-    const { art, sceneId, point, tokens } = data;
+    const { art, sceneId, point, tokens, style = "freeze", line = null, knock = null, move = false } = data;
     Hooks.callAll("impactFrames.play", data);
-    if (playing) return trace("предыдущий кадр ещё идёт — этот пропущен");
-    if (!prefs.on()) return trace("кадры выключены в настройках");
+    // Перенос при Отбросе — изменение поля, а не украшение: Мастер переносит цель, даже если кадры у него выключены
+    if (playing || !prefs.on()) {
+        if (style === "launch" && knock && move) moveKnocked(sceneId, knock);
+        return trace(playing ? "предыдущий кадр ещё идёт — этот пропущен" : "кадры выключены в настройках");
+    }
     startPlaying();
     // Сторож: кадр, который по какой-то причине не закончился, не должен заблокировать следующие
     const id = ++playId;
@@ -463,6 +731,15 @@ export async function playFrame(data) {
         cleanupOverlays();
         stopPlaying();
     }, WATCHDOG_MS * prefs.slow());
+    if (style === "barrage" || style === "launch") return playBlows({ id, sceneId, tokens, style, knock, move });
+    // Разрез — в самой сцене; без сцены — обычный стоп-кадр
+    if (style === "slash" && line) {
+        try {
+            if (playEngineSlash({ sceneId, point, tokens, line })) return;
+        } catch (error) {
+            console.warn(`${MODULE_ID} | разрез в сцене`, error);
+        }
+    }
     let pair, focus = { fx: 0.5, fy: 0.5 };
     const shot = captureScene(sceneId);
     trace(`кадр: ${shot ? `снимок сцены ${shot.width}×${shot.height}` : 'без сцены'}`);
@@ -526,3 +803,38 @@ export async function playFrame(data) {
     };
     requestAnimationFrame(tick);
 }
+
+/** Серия ударов и Отброс: удары по экрану; Отброс — ещё подъезд, вдох, рывок и полёт цели в сцене */
+async function playBlows({ id, sceneId, tokens, style, knock, move }) {
+    const calm = prefs.calm(), slow = prefs.slow(), volume = prefs.volume();
+    // Звуки моментов: синтез или файлы из папки звуков (sounds.mjs)
+    const onCue = (name, options = {}) => {
+        if (!(volume > 0)) return;
+        playCue(name, { volume, folder: prefs.get("soundFolder"), ...options });
+    };
+    const onHit = (final, index, pan) => onCue(final ? "punchFinal" : "punch", { index, pan });
+    // Музыка и звуки сцены — тише на время удара
+    const unduck = volume > 0 ? duckScene() : () => {};
+    try {
+        const fists = (quick = false) => playFists({ calm, slow, onHit, quick });
+        if (style === "barrage" || !knock) { if (style === "launch") trace("отброса нет: не вычислено, куда лететь — только удары"); await fists(); }
+        else if (!canvas?.ready || canvas.scene?.id !== sceneId) { trace("у вас открыта другая сцена — только удары"); await fists(); }
+        else if (!(await playLaunch({
+            casterId: knock.casterId ?? tokens?.[0], targetId: knock.tokenId, knock, calm, slow,
+            hideMarks: hideTokenMarks, between: () => fists(true), onCue
+        }))) {
+            trace("токен цели не найден на сцене — только удары");
+            await fists();
+        }
+    } catch (error) {
+        console.error(`${MODULE_ID} | удары`, error);
+        cleanupOverlays();
+    }
+    unduck();
+    if (id === playId) stopPlaying();
+    if (style === "launch" && knock) move ? moveKnocked(sceneId, knock) : setTimeout(cleanupOverlays, 100);
+}
+
+/** Подготовить рисунки ударов заранее, пока браузер свободен */
+export const warmUp = () => prepareFists().catch(error => console.warn(`${MODULE_ID} | рисунки ударов`, error));
+export { knockback };

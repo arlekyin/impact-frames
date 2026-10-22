@@ -20,6 +20,8 @@ export function registerSettings() {
     choices: { full: "IFRAMES.Effects.full", calm: "IFRAMES.Effects.calm", off: "IFRAMES.Effects.off" }
   });
   reg("slow", { scope: "client", type: Number, range: { min: 1, max: 30, step: 1 }, default: 1 });
+  // Автокадры на решающие удары любых атак — по умолчанию выключены: модуль — кадры для других модулей и макросов
+  reg("auto", { scope: "world", type: Boolean, default: false });
   // Что считать решающим ударом
   reg("onKill", { scope: "world", type: Boolean, default: true });
   reg("onCrit", { scope: "world", type: Boolean, default: true });
@@ -31,7 +33,10 @@ export function registerSettings() {
     choices: { players: "IFRAMES.Who.players", all: "IFRAMES.Who.all" }
   });
   reg("oncePerTurn", { scope: "world", type: Boolean, default: true });
+  // Отброс по умолчанию — только зрелище; перенос цели — изменение поля, решает Мастер
+  reg("launchMoves", { scope: "world", type: Boolean, default: false });
   reg("sound", { scope: "world", type: String, default: "", filePicker: "audio" });
+  reg("soundFolder", { scope: "world", type: String, default: "", filePicker: "folder" });
 }
 
 const get = key => game.settings.get(MODULE_ID, key);

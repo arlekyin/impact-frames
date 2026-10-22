@@ -14,8 +14,8 @@ For Foundry VTT and D&D 5e. No setup, no animation packs, no files: everything i
 
 ## What it does
 
-**Frames on decisive hits — automatically.** Roll damage as usual; when it is applied and it matters, every player
-sees the frame at the same moment. A hit is decisive when (each can be turned on or off, thresholds are yours):
+**Frames on decisive hits — automatically, if you want.** Turn on *Automatic frames* (off by default). Roll damage
+as usual; when it is applied and it matters, every player sees the frame at the same moment. A hit is decisive when (each can be turned on or off, thresholds are yours):
 
 - the target drops to 0 HP;
 - the attack is a critical hit;
@@ -61,7 +61,8 @@ In Foundry: **Add-on Modules → Install Module**, paste the manifest URL and pr
 [ВСТАВИТЬ: ссылка на module.json выпуска]
 ```
 
-Enable **Impact Frames** in your world. That's all — the next decisive hit will show a frame.
+Enable **Impact Frames** in your world. Turn on *Automatic frames* in its settings — and the next decisive hit will
+show a frame. Other modules (for example, Gacha Roguelike) call the frames themselves.
 
 ## Compatibility
 
@@ -76,6 +77,7 @@ Enable **Impact Frames** in your world. That's all — the next decisive hit wil
 
 | Setting | Who | Default |
 |---|---|---|
+| Automatic frames | GM | off |
 | Effects: full / no flashes / off | each player | no flashes |
 | Slow motion | each player | ×1 |
 | Decisive hit: drop to 0 HP / critical / half max HP / last enemy | GM | all on |
@@ -91,8 +93,8 @@ Enable **Impact Frames** in your world. That's all — the next decisive hit wil
 const frames = game.modules.get('impact-frames')?.api;
 // play a frame for everyone right now
 frames?.play({ style: 'slash', attacker: tokenA, target: tokenB });
-// arm a frame for this actor's next decisive hit
-frames?.arm(actor, { style: 'freeze' });
+// a launch: lunge, barrage and the target flying 30 ft (move: true — knock it back for real)
+frames?.launch({ casterId: tokenA.id, targetId: tokenB.id, move: true });
 ```
 
 The scene building blocks are exposed as well: `camera`, `letterbox`, `stage`, `overlay`, `audio`.
@@ -121,7 +123,7 @@ token*, and it is off by default.
 
 Для Foundry VTT и D&D 5e. Без настройки, без паков анимаций и файлов: всё рисуется и звучит в браузере.
 
-- **Кадры на решающие удары — сами.** Убил, крит, половина ПЗ за удар, последний враг — каждое можно выключить,
+- **Кадры на решающие удары — сами, если включить «Автокадры»** (по умолчанию выключено). Убил, крит, половина ПЗ за удар, последний враг — каждое можно выключить,
   пороги задаёт Мастер. По умолчанию — только удары героев игроков и не чаще раза за ход.
 - **Стили по типу урона:** Стоп-кадр, Разрез (рубящий), Серия ударов (дробящий без оружия), Отброс (вручную).
   Свой стиль — любому предмету или персонажу. Отброс по умолчанию только зрелище; настройка «Отброс двигает токен»

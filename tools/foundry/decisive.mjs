@@ -1,6 +1,6 @@
 /**
  * Решающий удар в настоящей Foundry: бросок урона dnd5e (activity.rollDamage) и применение урона с исходным
- * сообщением — как лоток под карточкой броска. Сцена «IF-тест»: герой игрока (Claude_player — владелец),
+ * сообщением — как лоток под карточкой броска. Автокадры (по умолчанию выключены) включаются на время проверки. Сцена «IF-тест»: герой игрока (Claude_player — владелец),
  * два врага, монстр. Кадр ловится хуком impactFrames.play; снимок кадра — с замедлением ×12.
  *
  *   node tools/foundry/decisive.mjs
@@ -53,12 +53,18 @@ try {
   }, { actorId, value, messageId });
   const set = (key, value) => ev(([k, v]) => game.settings.set("impact-frames", k, v), [key, value]);
 
-  const api = await ev(() => ({ active: game.modules.get("impact-frames")?.active, api: Object.keys(game.modules.get("impact-frames")?.api ?? {}), who: game.settings.get("impact-frames", "who") }));
-  check("модуль включён, API (play, decisiveReasons, cutscene), по умолчанию — удары героев игроков",
-    api.active && ["play", "decisiveReasons", "cutscene"].every(k => api.api.includes(k)) && api.who === "players", JSON.stringify(api));
+  const api = await ev(() => ({ active: game.modules.get("impact-frames")?.active, api: Object.keys(game.modules.get("impact-frames")?.api ?? {}), who: game.settings.get("impact-frames", "who"), auto: game.settings.get("impact-frames", "auto") }));
+  check("модуль включён, API (play, launch, decisiveReasons, cutscene); по умолчанию автокадры выключены, удары — героев игроков",
+    api.active && ["play", "launch", "decisiveReasons", "cutscene"].every(k => api.api.includes(k)) && api.who === "players" && api.auto === false, JSON.stringify(api));
 
   let msg = await roll(ids.hero);
-  let f = await apply(ids.a, 3, msg);
+  let f = await apply(ids.a, 16, msg);
+  check("автокадры выключены — тяжёлый удар без кадра", f.length === 0, JSON.stringify(f));
+  await set("auto", true);
+  await ev(id => game.actors.get(id).update({ "system.attributes.hp.value": 30 }), ids.a);
+
+  msg = await roll(ids.hero);
+  f = await apply(ids.a, 3, msg);
   check("лёгкий удар героя (3 из 30) — кадра нет", f.length === 0, JSON.stringify(f));
   msg = await roll(ids.hero);
   f = await apply(ids.a, 16, msg);
@@ -139,6 +145,12 @@ try {
 
   // ---------- Игрок видит кадр, решённый у Мастера
   const pl = await joinAs("Claude_player");
+  // Особенность стенда: два окна одного браузера — сообщения модулей от Мастера доходят до игрока, только если
+  // Мастер подключился позже игрока. Документы синхронизируются в любом порядке; в игре так не бывает
+  await page.reload();
+  await page.waitForFunction(() => window.game?.ready, null, { polling: 250, timeout: 120000 });
+  await page.waitForTimeout(1500);
+  await ev(() => { window.__frames = []; Hooks.on("impactFrames.play", d => window.__frames.push(d.reasons ?? ["manual"])); });
   await pl.page.evaluate(async () => {
     window.__frames = [];
     Hooks.on("impactFrames.play", d => window.__frames.push(d.reasons ?? ["manual"]));
@@ -146,14 +158,15 @@ try {
   });
   await ev(async ({ b }) => game.actors.get(b).update({ "system.attributes.hp.value": 30 }), ids);
   msg = await roll(ids.hero);
-  await apply(ids.b, 16, msg);
+  const gm = await apply(ids.b, 16, msg);
   await pl.page.waitForTimeout(1200);
   const remote = await pl.page.evaluate(() => ({ frames: window.__frames, overlay: !!document.querySelector(".ifr-overlay") }));
   await pl.shot("decisive-player");
-  check("игрок: кадр пришёл от Мастера по сокету и показан у него", remote.frames.length === 1 && remote.frames[0].includes("heavy"), JSON.stringify(remote));
+  check("игрок: кадр пришёл от Мастера по сокету и показан у него", remote.frames.length === 1 && remote.frames[0].includes("heavy"), JSON.stringify({ gm, remote }));
   await pl.page.evaluate(() => game.settings.set("impact-frames", "slow", 1));
   await pl.close();
 
+  await set("auto", false);
   const errors = log.filter(l => /impact-frames|ifr-/.test(l) && /error/i.test(l));
   check("ошибок модуля в консоли нет", !errors.length, errors.slice(0, 3).join(" | "));
 } catch (error) {
