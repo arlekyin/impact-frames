@@ -1,0 +1,19 @@
+{
+  "IFRAMES": {
+    "Settings": {
+      "effects": { "name": "Impact frames", "hint": "How you see frames on decisive hits. Only for you." },
+      "slow": { "name": "Slow motion", "hint": "Show frames this many times slower, to study them. 1 is normal speed. Only for you." },
+      "onKill": { "name": "Decisive: target drops", "hint": "A frame when a hit brings the target to 0 HP." },
+      "onCrit": { "name": "Decisive: critical hit", "hint": "A frame when the damage comes from a critical hit." },
+      "onHeavy": { "name": "Decisive: heavy hit", "hint": "A frame when one hit takes a large share of the target's maximum HP." },
+      "heavyShare": { "name": "Heavy hit, % of maximum HP", "hint": "How much of the target's maximum HP one hit must take to count as heavy." },
+      "onLastEnemy": { "name": "Decisive: last enemy", "hint": "A frame when the last creature of its side falls in combat." },
+      "who": { "name": "Whose hits", "hint": "Only player characters, or every creature including monsters." },
+      "oncePerTurn": { "name": "At most one frame per turn", "hint": "In combat, show no more than one frame per turn — the moment stays special." },
+      "sound": { "name": "Frame sound", "hint": "A sound file for the frame. Empty — the impact is synthesized in the browser." }
+    },
+    "Effects": { "full": "Full", "calm": "No flashes", "off": "Off" },
+    "Who": { "players": "Player characters", "all": "Everyone" },
+    "Warn": { "target": "Select the attacker's token and target the victim (T)." }
+  }
+}

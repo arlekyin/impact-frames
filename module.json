@@ -1,0 +1,52 @@
+{
+  "id": "impact-frames",
+  "title": "Impact Frames",
+  "description": "The decisive hit, felt by the whole table: a hitstop and two ink-and-light frames when a blow decides the fight. Кадры решающего удара для dnd5e.",
+  "version": "0.1.0",
+  "authors": [
+    {
+      "name": "arlekyin"
+    }
+  ],
+  "compatibility": {
+    "minimum": "13",
+    "verified": "14"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "dnd5e",
+        "type": "system",
+        "compatibility": {
+          "minimum": "5.2.0",
+          "verified": "6.0.6"
+        }
+      }
+    ]
+  },
+  "esmodules": [
+    "scripts/main.mjs"
+  ],
+  "styles": [
+    "styles/impact-frames.css"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    },
+    {
+      "lang": "ru",
+      "name": "Русский",
+      "path": "lang/ru.json"
+    }
+  ],
+  "socket": true,
+  "flags": {
+    "hotReload": {
+      "extensions": ["css", "json"],
+      "paths": ["styles", "lang"]
+    }
+  }
+}

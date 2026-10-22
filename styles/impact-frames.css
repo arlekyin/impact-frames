@@ -1,0 +1,19 @@
+/* Холсты кадров поверх всего экрана и кинополосы: мышь проходит насквозь */
+.ifr-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10000;
+  pointer-events: none;
+}
+.ifr-letterbox {
+  position: fixed;
+  left: 0;
+  width: 100vw;
+  background: #000;
+  z-index: 10001;
+  pointer-events: none;
+}
+.ifr-letterbox-top { top: 0; }
+.ifr-letterbox-bottom { bottom: 0; }
