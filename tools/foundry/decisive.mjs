@@ -173,6 +173,12 @@ try {
   console.error(error);
   check("проверка дошла до конца", false, error.message);
 }
+// Уборка: герой с владельцем-игроком попал бы в «отряд» других проверок мира
+await page.evaluate(async () => {
+  for (const c of game.combats.filter(c => c.scene?.name?.startsWith("IF-тест"))) await c.delete();
+  for (const s of game.scenes.filter(s => s.name.startsWith("IF-тест"))) await s.delete();
+  for (const a of game.actors.filter(a => a.name.startsWith("IF-тест"))) await a.delete();
+}).catch(() => {});
 const failed = summary();
 await close();
 process.exit(failed ? 1 : 0);
