@@ -2,3 +2,4 @@ node_modules/
 tools/foundry/out/
 tools/foundry/*.log
 tools/stand/out/
+release
